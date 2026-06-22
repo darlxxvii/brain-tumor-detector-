@@ -1,6 +1,6 @@
 import os
 
-import gdown
+import requests
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -159,13 +159,22 @@ st.write("Upload an MRI scan and the U-Net model will highlight tumor regions.")
 with st.sidebar:
     st.header("Model")
 
-    # Download weights from Google Drive if missing
-    # gdown handles the large-file confirmation page that urllib cannot
+    # Download weights from Google Drive if missing.
+    # drive.usercontent.google.com with confirm=t bypasses the large-file
+    # virus-scan page that urllib and plain requests.get would hit.
     if not os.path.exists(CKPT_PATH):
         gdrive_id = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
+        url = (
+            f"https://drive.usercontent.google.com/download"
+            f"?id={gdrive_id}&export=download&confirm=t"
+        )
         with st.spinner("Downloading model weights (~120 MB)..."):
             try:
-                gdown.download(id=gdrive_id, output=CKPT_PATH, quiet=True, fuzzy=True)
+                with requests.get(url, stream=True, timeout=120) as r:
+                    r.raise_for_status()
+                    with open(CKPT_PATH, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=32768):
+                            f.write(chunk)
                 st.cache_resource.clear()
             except Exception as e:
                 st.warning(f"Auto-download failed: {e}")
@@ -292,4 +301,3 @@ else:
         mcols = st.columns(len(m))
         for col, (name, val) in zip(mcols, m.items()):
             col.metric(name, f"{val:.4f}")
-
