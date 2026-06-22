@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 # ──────────────────────────────────────────────────────────────
 IMG_SIZE  = 256
 CKPT_PATH = "unet_brain_tumor_best.pth"
-GDRIVE_ID = "1YFjIlc4k_pdejMjlz6U_xaVQ6xl59whV"
+GDRIVE_ID = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
 
 # ──────────────────────────────────────────────────────────────
 # U-Net
@@ -72,59 +72,41 @@ class UNet(nn.Module):
 # Загрузка модели
 # ──────────────────────────────────────────────────────────────
 def _is_valid_pth(path):
-    """Проверяет, что файл существует, не пустой и является валидным PyTorch чекпоинтом."""
     try:
-        if not os.path.exists(path): return False
-        if os.path.getsize(path) < 10_000_000: return False # Веса U-Net должны весить явно больше 10 МБ
-        # Проверяем сигнатуру заголовка файла (зависит от формата сохранения PyTorch)
-        with open(path, "rb") as f: 
-            header = f.read(4)
-            return b"\x80" in header or b"PK" in header # Поддержка старого формата и нового zip-формата PyTorch
-    except Exception: 
-        return False
+        if os.path.getsize(path) < 1_000_000: return False
+        with open(path, "rb") as f: return f.read(1) == b"\x80"
+    except Exception: return False
 
-def _download_weights():
-    """Скачивает большие файлы с Google Диска, обходя предупреждение о проверке на вирусы."""
-    # Используем сессию, чтобы сохранять куки (cookies) между запросами
-    session = requests.Session()
-    
-    # 1. Делаем первый запрос, чтобы получить страницу-предупреждение и вытащить токен подтверждения
-    base_url = "https://docs.google.com/uc?export=download"
-    try:
-        response = session.get(base_url, params={"id": GDRIVE_ID}, stream=True, timeout=15)
-        
-        # Ищем токен подтверждения в куках или в тексте страницы
-        confirm_token = None
-        for key, value in response.cookies.items():
-            if key.startswith("download_warning"):
-                confirm_token = value
-                break
-                
-        # Если в куках не нашли, ищем в тексте (на случай изменений у Google)
-        if not confirm_token:
-            for line in response.iter_lines(decode_unicode=True):
-                if "confirm=" in line:
-                    # Очень грубый, но рабочий поиск токена в строке
-                    confirm_token = line.split("confirm=")[1].split("&")[0].split('"')[0]
-                    break
-
-        # 2. Если токен подтверждения найден (для больших файлов), формируем финальную ссылку
-        params = {"id": GDRIVE_ID, "export": "download"}
-        if confirm_token:
-            params["confirm"] = confirm_token
-            
-        # 3. Скачиваем сам файл весов частями (chunks)
-        with session.get(base_url, params=params, stream=True, timeout=300) as r:
-            r.raise_for_status()
-            with open(CKPT_PATH, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1048576): # качаем по 1 МБ для скорости
-                    if chunk:
+def _download_weights(progress_bar=None):
+    """Скачивает веса модели. progress_bar — st.progress объект или None."""
+    urls = [
+        f"https://github.com/darlxxvii/brain-tumor-detector-/releases/download/v1.0/unet_brain_tumor_best.pth",
+        f"https://drive.usercontent.google.com/download?id={GDRIVE_ID}&export=download&confirm=t",
+        f"https://drive.google.com/uc?export=download&id={GDRIVE_ID}&confirm=t",
+    ]
+    for url in urls:
+        try:
+            with requests.get(url, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
+                with open(CKPT_PATH, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
                         f.write(chunk)
-                        
-        return _is_valid_pth(CKPT_PATH)
-    except Exception as e:
-        print(f"Download error: {e}")
-        return False
+                        downloaded += len(chunk)
+                        if progress_bar and total:
+                            progress_bar.progress(
+                                min(downloaded / total, 1.0),
+                                text=f"Загрузка... {downloaded//1_048_576} / {total//1_048_576} МБ"
+                            )
+            if _is_valid_pth(CKPT_PATH):
+                return True
+            # файл скачался, но невалидный (HTML от Google Drive) — удаляем и пробуем другой URL
+            os.remove(CKPT_PATH)
+        except Exception:
+            pass
+    return False
+
 @st.cache_resource(show_spinner=False)
 def load_model():
     if not os.path.exists(CKPT_PATH) or not _is_valid_pth(CKPT_PATH):
@@ -309,8 +291,10 @@ with tab_demo:
     if needs_download:
         if os.path.exists(CKPT_PATH):
             os.remove(CKPT_PATH)
-        with st.spinner("Загрузка весов модели (~120 МБ)..."):
-            ok = _download_weights()
+        st.info("Первый запуск: скачиваем веса модели (~120 МБ). Займёт 2–4 минуты.")
+        pb = st.progress(0, text="Подключаемся к серверу...")
+        ok = _download_weights(progress_bar=pb)
+        pb.empty()
         if ok:
             st.cache_resource.clear()
             st.rerun()
