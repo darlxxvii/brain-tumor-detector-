@@ -201,10 +201,6 @@ with tab_home:
     # ── Шапка ────────────────────────────────────────────────
     st.markdown("""
     <div style="padding: 52px 0 40px; border-bottom: 1px solid #21262d; margin-bottom: 2.5rem;">
-        <p style="font-size:0.78rem; color:#7d8590; letter-spacing:0.12em;
-                  text-transform:uppercase; margin:0 0 1.2rem;">
-            Компьютерное зрение &nbsp;/&nbsp; Медицинская визуализация &nbsp;/&nbsp; Сегментация
-        </p>
         <h1 style="font-size:clamp(2rem,5vw,3rem); font-weight:700; color:#e6edf3;
                    margin:0 0 1.2rem; line-height:1.2; letter-spacing:-0.02em;">
             Сегментация опухолей<br>головного мозга на МРТ
