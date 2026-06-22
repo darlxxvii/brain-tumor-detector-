@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 # ──────────────────────────────────────────────────────────────
 IMG_SIZE  = 256
 CKPT_PATH = "unet_brain_tumor_best.pth"
-GDRIVE_ID = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
+GDRIVE_ID = "1YFjIlc4k_pdejMjlz6U_xaVQ6xl59whV"
 
 # ──────────────────────────────────────────────────────────────
 # U-Net
