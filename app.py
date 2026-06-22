@@ -72,10 +72,16 @@ class UNet(nn.Module):
 # Загрузка модели
 # ──────────────────────────────────────────────────────────────
 def _is_valid_pth(path):
+    """Валидный .pth: ZIP-архив (PK, PyTorch 1.6+) или legacy pickle (0x80).
+    HTML-страница ошибки начинается с '<' (0x3C)."""
     try:
-        if os.path.getsize(path) < 1_000_000: return False
-        with open(path, "rb") as f: return f.read(1) == b"\x80"
-    except Exception: return False
+        if os.path.getsize(path) < 1_000_000:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(2)
+        return head[:2] == b"PK" or head[:1] == b"\x80"
+    except Exception:
+        return False
 
 def _download_weights(progress_bar=None, log=None):
     """Скачивает веса модели. Возвращает (успех, сообщение об ошибке)."""
