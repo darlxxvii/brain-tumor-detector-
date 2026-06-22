@@ -77,16 +77,19 @@ def _is_valid_pth(path):
         with open(path, "rb") as f: return f.read(1) == b"\x80"
     except Exception: return False
 
-def _download_weights(progress_bar=None):
-    """Скачивает веса модели. progress_bar — st.progress объект или None."""
+def _download_weights(progress_bar=None, log=None):
+    """Скачивает веса модели. Возвращает (успех, сообщение об ошибке)."""
     urls = [
-        f"https://github.com/darlxxvii/brain-tumor-detector-/releases/download/v1.0/unet_brain_tumor_best.pth",
+        "https://github.com/darlxxvii/brain-tumor-detector-/releases/download/v1.0/unet_brain_tumor_best.pth",
         f"https://drive.usercontent.google.com/download?id={GDRIVE_ID}&export=download&confirm=t",
         f"https://drive.google.com/uc?export=download&id={GDRIVE_ID}&confirm=t",
     ]
+    errors = []
     for url in urls:
+        source = url.split("/")[2]  # github.com / drive.usercontent...
+        if log: log.info(f"Пробуем: {source}...")
         try:
-            with requests.get(url, stream=True, timeout=300) as r:
+            with requests.get(url, stream=True, timeout=300, allow_redirects=True) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("content-length", 0))
                 downloaded = 0
@@ -97,15 +100,22 @@ def _download_weights(progress_bar=None):
                         if progress_bar and total:
                             progress_bar.progress(
                                 min(downloaded / total, 1.0),
-                                text=f"Загрузка... {downloaded//1_048_576} / {total//1_048_576} МБ"
+                                text=f"{source}: {downloaded//1_048_576} / {total//1_048_576} МБ"
                             )
+            size_mb = os.path.getsize(CKPT_PATH) / 1_048_576
             if _is_valid_pth(CKPT_PATH):
-                return True
-            # файл скачался, но невалидный (HTML от Google Drive) — удаляем и пробуем другой URL
+                if log: log.success(f"Скачано {size_mb:.1f} МБ с {source}")
+                return True, ""
+            # невалидный файл (HTML вместо .pth)
+            err = f"{source}: скачано {size_mb:.1f} МБ, но файл невалидный (HTML?)"
+            errors.append(err)
+            if log: log.warning(err)
             os.remove(CKPT_PATH)
-        except Exception:
-            pass
-    return False
+        except Exception as e:
+            err = f"{source}: {type(e).__name__}: {e}"
+            errors.append(err)
+            if log: log.error(err)
+    return False, " | ".join(errors)
 
 @st.cache_resource(show_spinner=False)
 def load_model():
@@ -291,16 +301,26 @@ with tab_demo:
     if needs_download:
         if os.path.exists(CKPT_PATH):
             os.remove(CKPT_PATH)
-        st.info("Первый запуск: скачиваем веса модели (~120 МБ). Займёт 2–4 минуты.")
-        pb = st.progress(0, text="Подключаемся к серверу...")
-        ok = _download_weights(progress_bar=pb)
+        st.info("Первый запуск: скачиваем веса модели (~120 МБ)...")
+        log_area = st.empty()
+        pb = st.progress(0, text="Подключаемся...")
+
+        class _Log:
+            def info(self, msg):    log_area.info(msg)
+            def success(self, msg): log_area.success(msg)
+            def warning(self, msg): log_area.warning(msg)
+            def error(self, msg):   log_area.error(msg)
+
+        ok, err_msg = _download_weights(progress_bar=pb, log=_Log())
         pb.empty()
+
         if ok:
             st.cache_resource.clear()
             st.rerun()
         else:
-            st.warning("Автоматическая загрузка не удалась. Загрузите файл вручную.")
-            pth_file = st.file_uploader("Загрузить unet_brain_tumor_best.pth", type=["pth"])
+            log_area.error(f"Все источники недоступны: {err_msg}")
+            st.warning("Загрузите файл вручную:")
+            pth_file = st.file_uploader("unet_brain_tumor_best.pth", type=["pth"])
             if pth_file:
                 with open(CKPT_PATH, "wb") as f:
                     f.write(pth_file.read())
@@ -420,164 +440,97 @@ with tab_demo:
 # О ПРОЕКТЕ
 # ══════════════════════════════════════════════════════════════
 with tab_about:
+    import pandas as pd
 
-    def card(title, body_html):
-        st.markdown(f"""
-        <div style="border:1px solid #21262d; border-radius:10px; padding:24px 28px;
-                    background:#0d1117; margin-bottom:1rem;">
-            <p style="font-size:0.78rem; color:#4f8ef7; letter-spacing:0.1em;
-                      text-transform:uppercase; margin:0 0 12px; font-weight:600;">{title}</p>
-            {body_html}
-        </div>""", unsafe_allow_html=True)
+    st.subheader("О проекте")
+    st.caption("Архитектура, датасет, методология обучения")
+    st.divider()
 
-    P = "font-size:0.9rem; color:#c9d1d9; line-height:1.8; margin:0"
-    LI = "font-size:0.875rem; color:#c9d1d9; line-height:2;"
-
+    # ── Постановка задачи ────────────────────────────────────
+    st.markdown("#### Постановка задачи")
     st.markdown("""
-    <h2 style="font-size:1.5rem; font-weight:700; color:#e6edf3; margin:0 0 0.3rem;">О проекте</h2>
-    <p style="color:#7d8590; font-size:0.9rem; margin:0 0 2rem;">
-        Архитектура, датасет, методология обучения</p>
-    """, unsafe_allow_html=True)
+Задача — **бинарная сегментация пикселей**: каждый пиксель МРТ-снимка
+классифицируется как *опухоль* или *фон*.
+Используется U-Net, обученный с нуля без предобученных весов
+на датасете МРТ 110 пациентов с глиомами низкой степени злокачественности (LGG).
 
-    # Описание
-    card("Постановка задачи", f"""
-    <p style="{P}">
-        Задача — <strong style="color:#e6edf3;">бинарная сегментация пикселей</strong>:
-        каждый пиксель МРТ-снимка классифицируется как <em>опухоль</em> или <em>фон</em>.
-        Используется U-Net, обученный с нуля без предобученных весов
-        на датасете МРТ 110 пациентов с глиомами низкой степени злокачественности (LGG).
-    </p>
-    <p style="{P}; margin-top:10px;">
-        Ключевое отличие от многих реализаций — разбивка данных <strong style="color:#e6edf3;">по пациентам</strong>,
-        а не по снимкам. Это предотвращает утечку данных: снимки одного пациента не попадают
-        одновременно в train и test.
-    </p>""")
+Ключевое отличие — разбивка данных **по пациентам**, а не по снимкам.
+Это предотвращает утечку данных: снимки одного пациента не попадают
+одновременно в train и test.
+""")
+    st.divider()
 
-    # Архитектура
-    card("Архитектура U-Net", f"""
-    <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
-        <tr>
-            <th style="background:#161b22; color:#7d8590; padding:9px 14px;
-                       text-align:left; font-weight:500; border-bottom:1px solid #21262d;">Блок</th>
-            <th style="background:#161b22; color:#7d8590; padding:9px 14px;
-                       text-align:left; font-weight:500; border-bottom:1px solid #21262d;">Выходной тензор</th>
-            <th style="background:#161b22; color:#7d8590; padding:9px 14px;
-                       text-align:left; font-weight:500; border-bottom:1px solid #21262d;">Описание</th>
-        </tr>
-        <tr style="border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Вход</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 3, 256, 256]</td>
-            <td style="padding:9px 14px; color:#7d8590;">RGB МРТ-снимок</td>
-        </tr>
-        <tr style="background:#0a0e14; border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Encoder 1</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 64, 256, 256]</td>
-            <td style="padding:9px 14px; color:#7d8590;">DoubleConv</td>
-        </tr>
-        <tr style="border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Encoder 2</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 128, 128, 128]</td>
-            <td style="padding:9px 14px; color:#7d8590;">MaxPool + DoubleConv</td>
-        </tr>
-        <tr style="background:#0a0e14; border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Encoder 3</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 256, 64, 64]</td>
-            <td style="padding:9px 14px; color:#7d8590;">MaxPool + DoubleConv</td>
-        </tr>
-        <tr style="border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Encoder 4</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 512, 32, 32]</td>
-            <td style="padding:9px 14px; color:#7d8590;">MaxPool + DoubleConv</td>
-        </tr>
-        <tr style="background:#0a0e14; border-bottom:1px solid #21262d;">
-            <td style="padding:9px 14px; color:#4f8ef7; font-weight:600;">Bottleneck</td>
-            <td style="padding:9px 14px; color:#4f8ef7; font-family:monospace; font-weight:600;">[B, 1024, 16, 16]</td>
-            <td style="padding:9px 14px; color:#4f8ef7;">MaxPool + DoubleConv + Dropout(0.2)</td>
-        </tr>
-        <tr style="border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Decoder 4</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 512, 32, 32]</td>
-            <td style="padding:9px 14px; color:#7d8590;">Upsample + skip + DoubleConv</td>
-        </tr>
-        <tr style="background:#0a0e14; border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Decoder 3</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 256, 64, 64]</td>
-            <td style="padding:9px 14px; color:#7d8590;">Upsample + skip + DoubleConv</td>
-        </tr>
-        <tr style="border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Decoder 2</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 128, 128, 128]</td>
-            <td style="padding:9px 14px; color:#7d8590;">Upsample + skip + DoubleConv</td>
-        </tr>
-        <tr style="background:#0a0e14; border-bottom:1px solid #161b22;">
-            <td style="padding:9px 14px; color:#c9d1d9;">Decoder 1</td>
-            <td style="padding:9px 14px; color:#c9d1d9; font-family:monospace;">[B, 64, 256, 256]</td>
-            <td style="padding:9px 14px; color:#7d8590;">Upsample + skip + DoubleConv</td>
-        </tr>
-        <tr>
-            <td style="padding:9px 14px; color:#4f8ef7; font-weight:600;">Выход</td>
-            <td style="padding:9px 14px; color:#4f8ef7; font-family:monospace; font-weight:600;">[B, 1, 256, 256]</td>
-            <td style="padding:9px 14px; color:#4f8ef7;">Conv 1&times;1 — логиты (без сигмоиды)</td>
-        </tr>
-    </table>
-    <p style="{P}; margin-top:14px; color:#7d8590; font-size:0.82rem;">
-        Всего параметров: 31 396 627 &nbsp;&mdash;&nbsp;
-        Dropout только в боттлнеке для регуляризации &nbsp;&mdash;&nbsp;
-        Skip-связи передают детали с энкодера в декодер
-    </p>""")
+    # ── Архитектура ──────────────────────────────────────────
+    st.markdown("#### Архитектура U-Net")
+    arch_df = pd.DataFrame([
+        ["Вход",        "[B, 3, 256, 256]",    "RGB МРТ-снимок"],
+        ["Encoder 1",   "[B, 64, 256, 256]",   "DoubleConv"],
+        ["Encoder 2",   "[B, 128, 128, 128]",  "MaxPool + DoubleConv"],
+        ["Encoder 3",   "[B, 256, 64, 64]",    "MaxPool + DoubleConv"],
+        ["Encoder 4",   "[B, 512, 32, 32]",    "MaxPool + DoubleConv"],
+        ["Bottleneck",  "[B, 1024, 16, 16]",   "MaxPool + DoubleConv + Dropout(0.2)  ← регуляризация"],
+        ["Decoder 4",   "[B, 512, 32, 32]",    "Upsample + skip + DoubleConv"],
+        ["Decoder 3",   "[B, 256, 64, 64]",    "Upsample + skip + DoubleConv"],
+        ["Decoder 2",   "[B, 128, 128, 128]",  "Upsample + skip + DoubleConv"],
+        ["Decoder 1",   "[B, 64, 256, 256]",   "Upsample + skip + DoubleConv"],
+        ["Выход",       "[B, 1, 256, 256]",    "Conv 1x1 — логиты (без сигмоиды)"],
+    ], columns=["Блок", "Выходной тензор", "Описание"])
+    st.dataframe(arch_df, use_container_width=True, hide_index=True)
+    st.caption("Всего параметров: 31 396 627  |  Skip-связи передают детали с энкодера в декодер")
+    st.divider()
 
-    # Два блока рядом
+    # ── Две колонки: датасет + обучение ─────────────────────
     col_a, col_b = st.columns(2)
 
     with col_a:
-        card("Датасет", f"""
-        <ul style="padding-left:1.1rem; margin:0;">
-            <li style="{LI}"><strong style="color:#e6edf3;">Источник:</strong> Kaggle — mateuszbuda/lgg-mri-segmentation</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Когорта:</strong> TCGA, глиомы низкой степени (LGG)</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Снимков:</strong> 7 858</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Пациентов:</strong> 110 уникальных</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Маски:</strong> ручная разметка экспертами</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Формат:</strong> TIFF, 256&times;256 px</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Дисбаланс:</strong> ~80% снимков без опухоли</li>
-        </ul>""")
+        st.markdown("#### Датасет")
+        st.markdown("""
+- **Источник:** Kaggle — mateuszbuda/lgg-mri-segmentation
+- **Когорта:** TCGA, глиомы низкой степени (LGG)
+- **Снимков:** 7 858
+- **Пациентов:** 110 уникальных
+- **Маски:** ручная разметка экспертами
+- **Формат:** TIFF, 256×256 px
+- **Дисбаланс:** ~80% снимков без опухоли
+""")
 
-        card("Аугментация (только train)", f"""
-        <ul style="padding-left:1.1rem; margin:0;">
-            <li style="{LI}">Горизонтальное / вертикальное отражение</li>
-            <li style="{LI}">Поворот &plusmn;15&deg;</li>
-            <li style="{LI}">Случайный кроп + ресайз (зум-ин)</li>
-            <li style="{LI}">Яркость / контраст (только снимок, не маска)</li>
-            <li style="{LI}">Все трансформации применяются к снимку и маске с одними параметрами</li>
-        </ul>""")
+        st.markdown("#### Аугментация (только train)")
+        st.markdown("""
+- Горизонтальное / вертикальное отражение
+- Поворот ±15°
+- Случайный кроп + ресайз (зум-ин)
+- Яркость / контраст — только снимок, не маска
+- Все трансформации применяются к снимку и маске с одними параметрами
+""")
 
     with col_b:
-        card("Параметры обучения", f"""
-        <ul style="padding-left:1.1rem; margin:0;">
-            <li style="{LI}"><strong style="color:#e6edf3;">Разбивка:</strong> 70% train / 15% val / 15% test <em>по пациентам</em></li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Оптимизатор:</strong> Adam, lr=1e-4, weight_decay=1e-5</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Scheduler:</strong> ReduceLROnPlateau (&times;0.5 при плато)</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Функция потерь:</strong> BCEWithLogitsLoss + Dice (50/50)</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Батч:</strong> 16</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Эпохи:</strong> до 50, EarlyStopping (patience=7)</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Порог:</strong> подбор на val-выборке (sweep 0.05–0.95)</li>
-            <li style="{LI}"><strong style="color:#e6edf3;">Среда:</strong> Google Colab, GPU T4</li>
-        </ul>""")
+        st.markdown("#### Параметры обучения")
+        st.markdown("""
+- **Разбивка:** 70% train / 15% val / 15% test *по пациентам*
+- **Оптимизатор:** Adam, lr=1e-4, weight_decay=1e-5
+- **Scheduler:** ReduceLROnPlateau (×0.5 при плато)
+- **Функция потерь:** BCEWithLogitsLoss + Dice (50/50)
+- **Батч:** 16
+- **Эпохи:** до 50, EarlyStopping (patience=7)
+- **Порог:** подбор на val-выборке (sweep 0.05–0.95)
+- **Среда:** Google Colab, GPU T4
+""")
 
-        card("Функция потерь", f"""
-        <p style="{P}">
-            <strong style="color:#e6edf3;">BCEWithLogitsLoss</strong> — численно стабильная версия BCE,
-            сигмоида применяется внутри. Корректно работает с несбалансированными классами.<br><br>
-            <strong style="color:#e6edf3;">Dice Loss</strong> — напрямую оптимизирует метрику перекрытия,
-            помогает при дисбалансе классов (много пикселей фона).<br><br>
-            Итоговая: <code style="background:#161b22; padding:2px 6px; border-radius:4px;
-            color:#79c0ff;">0.5 &times; BCE + 0.5 &times; Dice</code>
-        </p>""")
+        st.markdown("#### Функция потерь")
+        st.markdown("""
+**BCEWithLogitsLoss** — численно стабильная версия BCE,
+сигмоида применяется внутри. Корректно работает с несбалансированными классами.
 
-    # Технологии
-    card("Стек технологий", "".join([
-        f'<span style="display:inline-block; background:#161b22; border:1px solid #30363d;'
-        f'color:#79c0ff; padding:4px 14px; border-radius:20px; font-size:0.82rem;'
-        f'margin:3px 4px 3px 0;">{t}</span>'
-        for t in ["PyTorch", "torchvision", "Streamlit", "scikit-learn",
-                  "NumPy", "Pillow", "Matplotlib", "Google Colab", "Python 3.10"]
-    ]))
+**Dice Loss** — напрямую оптимизирует метрику перекрытия,
+помогает при дисбалансе классов (много пикселей фона).
+
+Итоговая: `Loss = 0.5 × BCE + 0.5 × Dice`
+""")
+
+    st.divider()
+
+    # ── Стек технологий ──────────────────────────────────────
+    st.markdown("#### Стек технологий")
+    techs = ["PyTorch", "torchvision", "Streamlit", "scikit-learn",
+             "NumPy", "Pillow", "Matplotlib", "Google Colab", "Python 3.10"]
+    st.markdown("  ".join([f"`{t}`" for t in techs]))
