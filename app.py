@@ -304,6 +304,11 @@ with tab_demo:
     """, unsafe_allow_html=True)
 
     # ── Скачивание / загрузка модели ─────────────────────────
+    # ВАЖНО: не используем st.stop() — он останавливает весь скрипт,
+    # и вкладка "О проекте" (идёт ниже по коду) не отрисовывается.
+    # Вместо этого вся логика обёрнута во вложенные if-блоки.
+    demo_ready = True
+
     if needs_download:
         if os.path.exists(CKPT_PATH):
             os.remove(CKPT_PATH)
@@ -332,114 +337,114 @@ with tab_demo:
                     f.write(pth_file.read())
                 st.cache_resource.clear()
                 st.rerun()
-            st.stop()
+            demo_ready = False
 
-    if model is None:
+    if demo_ready and model is None:
         st.error("Модель не загружена. Попробуйте обновить страницу.")
-        st.stop()
+        demo_ready = False
 
-    # ── Настройки ─────────────────────────────────────────────
-    sc1, sc2, _ = st.columns([2, 2, 4])
-    with sc1:
-        threshold = st.slider("Порог детекции", 0.05, 0.95, float(default_thr), 0.05,
-                              help="Ниже — чувствительнее. Выше — точнее.")
-    with sc2:
-        show_heatmap = st.checkbox("Карта вероятностей", value=True)
+    if demo_ready:
+        # ── Настройки ─────────────────────────────────────────
+        sc1, sc2, _ = st.columns([2, 2, 4])
+        with sc1:
+            threshold = st.slider("Порог детекции", 0.05, 0.95, float(default_thr), 0.05,
+                                  help="Ниже — чувствительнее. Выше — точнее.")
+        with sc2:
+            show_heatmap = st.checkbox("Карта вероятностей", value=True)
 
-    st.divider()
-
-    # ── Загрузчики ────────────────────────────────────────────
-    u1, u2 = st.columns(2)
-    with u1:
-        mri_file = st.file_uploader("МРТ-снимок (обязательно)",
-                                    type=["tif","tiff","jpg","jpeg","png"])
-    with u2:
-        gt_file  = st.file_uploader("Маска разметки (опционально — включает метрики)",
-                                    type=["tif","tiff","jpg","jpeg","png"])
-
-    if mri_file is None:
-        st.markdown("""
-        <div style="border:2px dashed #21262d; border-radius:10px;
-                    padding:32px; text-align:center; color:#484f58; font-size:0.9rem;">
-            Загрузите снимок выше, чтобы увидеть результат
-        </div>""", unsafe_allow_html=True)
-        st.stop()
-
-    # ── Инференс ─────────────────────────────────────────────
-    img        = Image.open(mri_file)
-    img_tensor = preprocess(img)
-    probs, pred_mask = infer(model, img_tensor, threshold)
-    img_disp   = denormalize(img_tensor)
-
-    tumor_px  = int(pred_mask.sum())
-    tumor_pct = 100.0 * tumor_px / (IMG_SIZE * IMG_SIZE)
-
-    if tumor_px > 0:
-        st.markdown(
-            f'<div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);'
-            f'border-radius:8px; padding:14px 20px; color:#fca5a5; font-weight:600; font-size:0.95rem;">'
-            f'Опухоль обнаружена &mdash; {tumor_pct:.1f}% площади снимка ({tumor_px:,} пикселей)'
-            f'</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(
-            '<div style="background:rgba(34,197,94,0.07); border:1px solid rgba(34,197,94,0.3);'
-            'border-radius:8px; padding:14px 20px; color:#86efac; font-weight:600; font-size:0.95rem;">'
-            'Опухоль не обнаружена при текущем пороге'
-            '</div>', unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # GT-маска
-    gt_mask = None
-    if gt_file:
-        gt_pil  = Image.open(gt_file).convert("L").resize(
-            (IMG_SIZE, IMG_SIZE), Image.Resampling.NEAREST)
-        gt_mask = (np.array(gt_pil) > 127).astype(np.float32)
-
-    # Сетка результатов
-    n_cols = 2 + int(show_heatmap) + int(gt_mask is not None)
-    cols   = st.columns(n_cols)
-    i = 0
-
-    with cols[i]:
-        st.caption("МРТ-снимок")
-        st.image(img_disp, use_container_width=True)
-    i += 1
-
-    with cols[i]:
-        st.caption("Предсказанная маска")
-        st.image(pred_mask, use_container_width=True, clamp=True)
-    i += 1
-
-    if show_heatmap:
-        with cols[i]:
-            st.caption("Карта вероятностей")
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(probs, cmap="hot", vmin=0, vmax=1)
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            ax.axis("off"); plt.tight_layout()
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-        i += 1
-
-    if gt_mask is not None:
-        with cols[i]:
-            st.caption("Overlay vs. разметка")
-            overlay = img_disp.copy()
-            overlay[(pred_mask==1)&(gt_mask==1)] = [0.0, 1.0, 0.0]
-            overlay[(pred_mask==1)&(gt_mask==0)] = [1.0, 0.0, 0.0]
-            overlay[(pred_mask==0)&(gt_mask==1)] = [0.0, 0.0, 1.0]
-            st.image(overlay, use_container_width=True)
-            st.caption("Зелёный = TP   |   Красный = FP   |   Синий = FN")
-        i += 1
-
-    if gt_mask is not None:
         st.divider()
-        st.markdown("**Метрики относительно разметки**")
-        m     = calc_metrics(pred_mask, gt_mask)
-        mcols = st.columns(len(m))
-        for col, (name, val) in zip(mcols, m.items()):
-            col.metric(name, f"{val:.4f}")
+
+        # ── Загрузчики ─────────────────────────────────────────
+        u1, u2 = st.columns(2)
+        with u1:
+            mri_file = st.file_uploader("МРТ-снимок (обязательно)",
+                                        type=["tif","tiff","jpg","jpeg","png"])
+        with u2:
+            gt_file  = st.file_uploader("Маска разметки (опционально — включает метрики)",
+                                        type=["tif","tiff","jpg","jpeg","png"])
+
+        if mri_file is None:
+            st.markdown("""
+            <div style="border:2px dashed #21262d; border-radius:10px;
+                        padding:32px; text-align:center; color:#484f58; font-size:0.9rem;">
+                Загрузите снимок выше, чтобы увидеть результат
+            </div>""", unsafe_allow_html=True)
+        else:
+            # ── Инференс ───────────────────────────────────────
+            img        = Image.open(mri_file)
+            img_tensor = preprocess(img)
+            probs, pred_mask = infer(model, img_tensor, threshold)
+            img_disp   = denormalize(img_tensor)
+
+            tumor_px  = int(pred_mask.sum())
+            tumor_pct = 100.0 * tumor_px / (IMG_SIZE * IMG_SIZE)
+
+            if tumor_px > 0:
+                st.markdown(
+                    f'<div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);'
+                    f'border-radius:8px; padding:14px 20px; color:#fca5a5; font-weight:600; font-size:0.95rem;">'
+                    f'Опухоль обнаружена &mdash; {tumor_pct:.1f}% площади снимка ({tumor_px:,} пикселей)'
+                    f'</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    '<div style="background:rgba(34,197,94,0.07); border:1px solid rgba(34,197,94,0.3);'
+                    'border-radius:8px; padding:14px 20px; color:#86efac; font-weight:600; font-size:0.95rem;">'
+                    'Опухоль не обнаружена при текущем пороге'
+                    '</div>', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # GT-маска
+            gt_mask = None
+            if gt_file:
+                gt_pil  = Image.open(gt_file).convert("L").resize(
+                    (IMG_SIZE, IMG_SIZE), Image.Resampling.NEAREST)
+                gt_mask = (np.array(gt_pil) > 127).astype(np.float32)
+
+            # Сетка результатов
+            n_cols = 2 + int(show_heatmap) + int(gt_mask is not None)
+            cols   = st.columns(n_cols)
+            i = 0
+
+            with cols[i]:
+                st.caption("МРТ-снимок")
+                st.image(img_disp, use_container_width=True)
+            i += 1
+
+            with cols[i]:
+                st.caption("Предсказанная маска")
+                st.image(pred_mask, use_container_width=True, clamp=True)
+            i += 1
+
+            if show_heatmap:
+                with cols[i]:
+                    st.caption("Карта вероятностей")
+                    fig, ax = plt.subplots(figsize=(4, 4))
+                    im = ax.imshow(probs, cmap="hot", vmin=0, vmax=1)
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                    ax.axis("off"); plt.tight_layout()
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
+                i += 1
+
+            if gt_mask is not None:
+                with cols[i]:
+                    st.caption("Overlay vs. разметка")
+                    overlay = img_disp.copy()
+                    overlay[(pred_mask==1)&(gt_mask==1)] = [0.0, 1.0, 0.0]
+                    overlay[(pred_mask==1)&(gt_mask==0)] = [1.0, 0.0, 0.0]
+                    overlay[(pred_mask==0)&(gt_mask==1)] = [0.0, 0.0, 1.0]
+                    st.image(overlay, use_container_width=True)
+                    st.caption("Зелёный = TP   |   Красный = FP   |   Синий = FN")
+                i += 1
+
+            if gt_mask is not None:
+                st.divider()
+                st.markdown("**Метрики относительно разметки**")
+                m     = calc_metrics(pred_mask, gt_mask)
+                mcols = st.columns(len(m))
+                for col, (name, val) in zip(mcols, m.items()):
+                    col.metric(name, f"{val:.4f}")
 
 
 # ══════════════════════════════════════════════════════════════
