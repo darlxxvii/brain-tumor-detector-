@@ -1,6 +1,6 @@
 import os
-import urllib.request
 
+import gdown
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -160,12 +160,12 @@ with st.sidebar:
     st.header("Model")
 
     # Download weights from Google Drive if missing
+    # gdown handles the large-file confirmation page that urllib cannot
     if not os.path.exists(CKPT_PATH):
-        gdrive_id  = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
-        direct_url = f"https://docs.google.com/uc?export=download&id={gdrive_id}"
+        gdrive_id = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
         with st.spinner("Downloading model weights (~120 MB)..."):
             try:
-                urllib.request.urlretrieve(direct_url, CKPT_PATH)
+                gdown.download(id=gdrive_id, output=CKPT_PATH, quiet=True, fuzzy=True)
                 st.cache_resource.clear()
             except Exception as e:
                 st.warning(f"Auto-download failed: {e}")
@@ -292,3 +292,4 @@ else:
         mcols = st.columns(len(m))
         for col, (name, val) in zip(mcols, m.items()):
             col.metric(name, f"{val:.4f}")
+
