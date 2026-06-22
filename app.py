@@ -104,20 +104,23 @@ def _is_valid_pth(path: str) -> bool:
 
 
 def _download_weights(dest: str) -> bool:
-    """Download from Google Drive, returns True on success."""
-    url = (
-        f"https://drive.usercontent.google.com/download"
-        f"?id={GDRIVE_ID}&export=download&confirm=t"
-    )
-    try:
-        with requests.get(url, stream=True, timeout=180) as r:
-            r.raise_for_status()
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(chunk_size=65536):
-                    f.write(chunk)
-        return _is_valid_pth(dest)
-    except Exception:
-        return False
+    """Try two Google Drive URL formats, return True if a valid .pth was saved."""
+    urls = [
+        f"https://drive.usercontent.google.com/download?id={GDRIVE_ID}&export=download&confirm=t",
+        f"https://drive.google.com/uc?export=download&id={GDRIVE_ID}&confirm=t",
+    ]
+    for url in urls:
+        try:
+            with requests.get(url, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        f.write(chunk)
+            if _is_valid_pth(dest):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 @st.cache_resource
@@ -194,19 +197,28 @@ with st.sidebar:
 
     if needs_download:
         if os.path.exists(CKPT_PATH):
-            os.remove(CKPT_PATH)   # delete the corrupted HTML file
+            os.remove(CKPT_PATH)
         with st.spinner("Downloading model weights (~120 MB)..."):
             ok = _download_weights(CKPT_PATH)
         if ok:
             st.cache_resource.clear()
-            st.success("Weights downloaded!")
         else:
-            st.error("Download failed. Check that the Google Drive file is shared publicly.")
+            st.warning("Auto-download failed. Upload the .pth file manually below.")
+            uploaded_pth = st.file_uploader(
+                "Upload unet_brain_tumor_best.pth",
+                type=["pth"],
+                key="pth_uploader",
+            )
+            if uploaded_pth is not None:
+                with open(CKPT_PATH, "wb") as f:
+                    f.write(uploaded_pth.read())
+                st.cache_resource.clear()
+                st.rerun()
 
     model, saved_threshold, saved_metrics = load_model()
 
     if model is None:
-        st.error("Model not loaded. See error above.")
+        st.error("Model not loaded.")
     else:
         st.success("Model loaded")
         if saved_metrics:
