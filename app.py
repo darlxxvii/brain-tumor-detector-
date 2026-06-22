@@ -160,6 +160,21 @@ with st.sidebar:
     st.header("Model")
     ckpt_path = st.text_input("Checkpoint file", "unet_brain_tumor_best.pth")
 
+    # --- АВТОМАТИЧЕСКОЕ СКАЧИВАНИЕ С GOOGLE ДИСКА ДЛЯ СТРИМЛИТ КЛАУД ---
+    import os
+    import urllib.request
+
+    if ckpt_path == "unet_brain_tumor_best.pth" and not os.path.exists(ckpt_path):
+        with st.spinner("Downloading model weights from Google Drive (~120 MB)... Please wait."):
+            # Превращаем твою ссылку в прямую ссылку на скачивание:
+            gdrive_id = "1lNU1SafiT8nmEDJbMKiqrn1pLLwpw36W"
+            direct_url = f"https://docs.google.com/uc?export=download&id={gdrive_id}"
+            
+            # Скачиваем файл
+            urllib.request.urlretrieve(direct_url, ckpt_path)
+            st.success("Weights downloaded successfully!")
+    # ─────────────────────────────────────────────────────────────────
+
     try:
         model, saved_threshold, saved_metrics = load_model(ckpt_path)
         st.success("Model loaded")
@@ -182,8 +197,7 @@ with st.sidebar:
         "Detection threshold",
         min_value=0.05, max_value=0.95,
         value=float(saved_threshold), step=0.05,
-        help="Lower = more sensitive (catches more tumor, more false positives). "
-             "Higher = more precise (fewer false positives, may miss small tumors).",
+        help="Lower = more sensitive. Higher = more precise.",
     )
     show_heatmap = st.checkbox("Show probability heatmap", value=True)
 
